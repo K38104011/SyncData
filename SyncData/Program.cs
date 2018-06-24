@@ -2,15 +2,18 @@
 using System.Collections.Generic;
 using System.Linq;
 using Autofac;
+using FluentValidation;
+using Newtonsoft.Json;
+using System.Reflection;
 
 namespace SyncData
 {
-    interface IBusinessModelValidation
+    public interface IBusinessModelValidation
     {
         string CompanyCode { get; set; }
     }
 
-    interface IModelValidation<TBusinessModelValidation, TDataTypeModelValidation, TModel> : IBaseModelValidation
+    public interface IModelValidation<TBusinessModelValidation, TDataTypeModelValidation, TModel> : IBaseModelValidation
         where TBusinessModelValidation : IBusinessModelValidation
         where TModel : class
         where TDataTypeModelValidation : TModel
@@ -23,11 +26,11 @@ namespace SyncData
 
     public interface IBaseModelValidation
     {
-        IEnumerable<object> Models { get; set; }
+        object Result { get; set; }
         IEnumerable<string> Validate();
     }
 
-    abstract class JsonModelValidation<TBusinessModelValidation, TDataTypeModelValidation, TModel> :
+    public abstract class JsonModelValidation<TBusinessModelValidation, TDataTypeModelValidation, TModel> :
         IModelValidation<TBusinessModelValidation, TDataTypeModelValidation, TModel>
             where TBusinessModelValidation : IBusinessModelValidation
             where TModel : class
@@ -35,12 +38,15 @@ namespace SyncData
     {
         private IEnumerable<TBusinessModelValidation> _validationBusinessModels;
         private readonly IModelValidationHelper _modelValidationHelper;
-        public IEnumerable<object> Models { get; set; }
+        public object Result { get; set; }
 
         protected JsonModelValidation(IModelValidationHelper modelValidationHelper, string inputData)
         {
             _modelValidationHelper = modelValidationHelper;
-            _validationBusinessModels = new List<TBusinessModelValidation>();
+            var modelType = typeof(TBusinessModelValidation);
+            var modelListType = typeof(List<>).MakeGenericType(modelType);
+            _validationBusinessModels = (IEnumerable<TBusinessModelValidation>) 
+                JsonConvert.DeserializeObject(inputData, modelListType);
         }
 
         protected JsonModelValidation(string inputData) :
@@ -51,7 +57,22 @@ namespace SyncData
         public virtual IEnumerable<IValidationResult> ValidateBusiness(
             TBusinessModelValidation validationBusinessModel)
         {
-            return new List<ValidationResult>();
+            var validatorName = $"{typeof(TModel).Name}Validator";
+            var validatorType = AppDomain.CurrentDomain.GetAssemblies()
+                       .SelectMany(t => t.GetTypes())
+                       .Where(t =>  t.IsClass &&
+                                    t.Namespace == "SyncData" &&
+                                    t.Name == validatorName)
+                        .First();
+            var instanceValidator = (IValidator) Activator.CreateInstance(validatorType);
+            var validationResult = instanceValidator.Validate(validationBusinessModel);
+            var result = validationResult.Errors.Select(e => {
+                return new ValidationResult{
+                    ErrorCode = e.ErrorCode,
+                    PropertyName = e.PropertyName
+                };
+            });
+            return result;
         }
 
         public virtual IEnumerable<IValidationResult> ValidateDataType(
@@ -63,6 +84,7 @@ namespace SyncData
 
         public virtual IEnumerable<string> Validate()
         {
+            IEnumerable<IValidationResult> validationResults = null;
             foreach (var model in _validationBusinessModels)
             {
                 var validationBusinessResults = ValidateBusiness(model);
@@ -73,14 +95,31 @@ namespace SyncData
                     return _modelValidationHelper.BuildValidationResultMessage(validationBusinessResults);
                 }
             }
-            Models = new List<TModel>();
+            Result = BuildResult(new ModelValidationContext
+            {
+                ValidationResults = validationResults,
+                BusinessModels = _validationBusinessModels
+            });
             return new List<string>();
+        }
+
+        protected abstract object BuildResult(ModelValidationContext context);
+
+        protected object DefaultBuildResult(ModelValidationContext context)
+        {
+            return null;
         }
 
         public class ValidationResult : IValidationResult
         {
             public string ErrorCode { get; set; }
             public string PropertyName { get; set; }
+        }
+
+        public class ModelValidationContext
+        {
+            public IEnumerable<IValidationResult> ValidationResults { get; set; }
+            public IEnumerable<TBusinessModelValidation> BusinessModels { get; set; }
         }
     }
 
@@ -111,22 +150,22 @@ namespace SyncData
         string PropertyName { get; set; }
     }
 
-    class Region
+    public class Region
     {
         public string Name { get; set; }
     }
 
-    class RegionDataType : Region
+    public class RegionDataType : Region
     {
         public string AnotherName { get; set; }
     }
 
-    class RegionBusiness : IBusinessModelValidation
+    public class RegionBusiness : Region, IBusinessModelValidation
     {
         public string CompanyCode { get; set; }
     }
 
-    class RegionModelValidation : JsonModelValidation<RegionBusiness, RegionDataType, Region>
+    public class RegionModelValidation : JsonModelValidation<RegionBusiness, RegionDataType, Region>
     {
         public RegionModelValidation(string inputData) : base(inputData)
         {
@@ -137,6 +176,19 @@ namespace SyncData
             : base(modelValidationHelper, inputData)
         {
 
+        }
+
+        protected override object BuildResult(ModelValidationContext context)
+        {
+            return base.DefaultBuildResult(context);
+        }
+    }
+
+    public class RegionValidator : AbstractValidator<Region>
+    {
+        public RegionValidator()
+        {
+            RuleFor(e => e.Name).NotNull().NotEmpty();
         }
     }
 
@@ -152,9 +204,10 @@ namespace SyncData
 
             using (var scope = container.BeginLifetimeScope())
             {
+                var json = @"[{ Name: 'Giang' }]";
                 var validation = scope
                     .ResolveNamed<IBaseModelValidation>(
-                        nameof(RegionModelValidation), new PositionalParameter(1, "test"));
+                        nameof(RegionModelValidation), new PositionalParameter(1, json));
                 var validationResults = validation.Validate();
                 if (validationResults.Any())
                 {
@@ -162,7 +215,7 @@ namespace SyncData
                 }
                 else
                 {
-                    var records = validation.Models;
+                    var records = (IEnumerable<Region>)validation.Result;
                 }
             }
 
