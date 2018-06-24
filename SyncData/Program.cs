@@ -1,16 +1,17 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using Autofac;
 
 namespace SyncData
 {
-    interface IValidationBusinessModel
+    interface IBusinessModelValidation
     {
         string CompanyCode { get; set; }
     }
 
-    interface IModelValidation<TBusinessModelValidation, TDataTypeModelValidation, TModel>
-        where TBusinessModelValidation : IValidationBusinessModel
+    interface IModelValidation<TBusinessModelValidation, TDataTypeModelValidation, TModel> : IBaseModelValidation
+        where TBusinessModelValidation : IBusinessModelValidation
         where TModel : class
         where TDataTypeModelValidation : TModel
     {
@@ -18,23 +19,33 @@ namespace SyncData
             TBusinessModelValidation validationBusinessModel);
         IEnumerable<IValidationResult> ValidateDataType(
         TBusinessModelValidation validationBusinessModel);
+    }
+
+    public interface IBaseModelValidation
+    {
+        IEnumerable<object> Models { get; set; }
         IEnumerable<string> Validate();
     }
 
-    abstract class BaseModelValidation<TBusinessModelValidation, TDataTypeModelValidation, TModel> :
+    abstract class JsonModelValidation<TBusinessModelValidation, TDataTypeModelValidation, TModel> :
         IModelValidation<TBusinessModelValidation, TDataTypeModelValidation, TModel>
-            where TBusinessModelValidation : IValidationBusinessModel
+            where TBusinessModelValidation : IBusinessModelValidation
             where TModel : class
             where TDataTypeModelValidation : TModel
     {
         private IEnumerable<TBusinessModelValidation> _validationBusinessModels;
         private readonly IModelValidationHelper _modelValidationHelper;
-        public IEnumerable<TModel> Models;
+        public IEnumerable<object> Models { get; set; }
 
-        protected BaseModelValidation(string inputData)
+        protected JsonModelValidation(IModelValidationHelper modelValidationHelper, string inputData)
         {
+            _modelValidationHelper = modelValidationHelper;
             _validationBusinessModels = new List<TBusinessModelValidation>();
-            _modelValidationHelper = new ModelValidationHelper();
+        }
+
+        protected JsonModelValidation(string inputData) :
+            this(new DefaultModelValidationHelper(), inputData)
+        {
         }
 
         public virtual IEnumerable<IValidationResult> ValidateBusiness(
@@ -73,7 +84,15 @@ namespace SyncData
         }
     }
 
-    public class ModelValidationHelper : IModelValidationHelper
+    public class DefaultModelValidationHelper : IModelValidationHelper
+    {
+        public IEnumerable<string> BuildValidationResultMessage(IEnumerable<IValidationResult> validationResults)
+        {
+            return new List<string>();
+        }
+    }
+
+    public class CustomModelValidationHelper : IModelValidationHelper
     {
         public IEnumerable<string> BuildValidationResultMessage(IEnumerable<IValidationResult> validationResults)
         {
@@ -102,14 +121,20 @@ namespace SyncData
         public string AnotherName { get; set; }
     }
 
-    class RegionBusiness : IValidationBusinessModel
+    class RegionBusiness : IBusinessModelValidation
     {
         public string CompanyCode { get; set; }
     }
 
-    class RegionModelValidation : BaseModelValidation<RegionBusiness, RegionDataType, Region>
+    class RegionModelValidation : JsonModelValidation<RegionBusiness, RegionDataType, Region>
     {
         public RegionModelValidation(string inputData) : base(inputData)
+        {
+
+        }
+
+        public RegionModelValidation(IModelValidationHelper modelValidationHelper, string inputData)
+            : base(modelValidationHelper, inputData)
         {
 
         }
@@ -119,15 +144,28 @@ namespace SyncData
     {
         static void Main(string[] args)
         {
-            var regionModelValidation = new RegionModelValidation("test");
-            var validationResults = regionModelValidation.Validate();
-            if (validationResults.Any())
+            var builder = new ContainerBuilder();
+            builder.RegisterType<DefaultModelValidationHelper>().As<IModelValidationHelper>();
+            builder.RegisterType<RegionModelValidation>()
+                    .Named<IBaseModelValidation>(nameof(RegionModelValidation));
+            var container = builder.Build();
+
+            using (var scope = container.BeginLifetimeScope())
             {
-                throw new Exception(string.Join(",", validationResults));
+                var validation = scope
+                    .ResolveNamed<IBaseModelValidation>(
+                        nameof(RegionModelValidation), new PositionalParameter(1, "test"));
+                var validationResults = validation.Validate();
+                if (validationResults.Any())
+                {
+                    throw new Exception(string.Join(",", validationResults));
+                }
+                else
+                {
+                    var records = validation.Models;
+                }
             }
-            else {
-                var records = regionModelValidation.Models;
-            }
+
             Console.WriteLine("Hello World!");
         }
     }
