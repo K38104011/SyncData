@@ -45,7 +45,7 @@ namespace SyncData
             _modelValidationHelper = modelValidationHelper;
             var modelType = typeof(TBusinessModelValidation);
             var modelListType = typeof(List<>).MakeGenericType(modelType);
-            _validationBusinessModels = (IEnumerable<TBusinessModelValidation>) 
+            _validationBusinessModels = (IEnumerable<TBusinessModelValidation>)
                 JsonConvert.DeserializeObject(inputData, modelListType);
         }
 
@@ -60,14 +60,16 @@ namespace SyncData
             var validatorName = $"{typeof(TModel).Name}Validator";
             var validatorType = AppDomain.CurrentDomain.GetAssemblies()
                        .SelectMany(t => t.GetTypes())
-                       .Where(t =>  t.IsClass &&
+                       .Where(t => t.IsClass &&
                                     t.Namespace == "SyncData" &&
                                     t.Name == validatorName)
                         .First();
-            var instanceValidator = (IValidator) Activator.CreateInstance(validatorType);
+            var instanceValidator = (IValidator)Activator.CreateInstance(validatorType);
             var validationResult = instanceValidator.Validate(validationBusinessModel);
-            var result = validationResult.Errors.Select(e => {
-                return new ValidationResult{
+            var result = validationResult.Errors.Select(e =>
+            {
+                return new ValidationResult
+                {
                     ErrorCode = e.ErrorCode,
                     PropertyName = e.PropertyName
                 };
@@ -78,8 +80,23 @@ namespace SyncData
         public virtual IEnumerable<IValidationResult> ValidateDataType(
             TBusinessModelValidation validationBusinessModel)
         {
-            var type = typeof(TDataTypeModelValidation);
-            return new List<ValidationResult>();
+            var result = new List<ValidationResult>();
+            foreach(var prop in typeof(TDataTypeModelValidation).GetProperties())
+            {
+                var value = typeof(TBusinessModelValidation)
+                                .GetProperty(prop.Name)
+                                .GetValue(validationBusinessModel);
+                try {
+                    Convert.ChangeType(value, prop.PropertyType);
+                }
+                catch(Exception){
+                    result.Add(new ValidationResult{
+                        ErrorCode = "DataType",
+                        PropertyName = prop.Name
+                    });
+                }
+            }
+            return result;
         }
 
         public virtual IEnumerable<string> Validate()
@@ -87,12 +104,12 @@ namespace SyncData
             IEnumerable<IValidationResult> validationResults = null;
             foreach (var model in _validationBusinessModels)
             {
-                var validationBusinessResults = ValidateBusiness(model);
+                var validationBusinessResults = ValidateBusiness(model)
+                                                    .Union(ValidateDataType(model));
                 if (validationBusinessResults.Any())
                 {
-                    validationBusinessResults = validationBusinessResults
-                        .Union(ValidateDataType(model));
-                    return _modelValidationHelper.BuildValidationResultMessage(validationBusinessResults);
+                    return _modelValidationHelper
+                                .BuildValidationResultMessage(validationBusinessResults);
                 }
             }
             Result = BuildResult(new ModelValidationContext
@@ -157,11 +174,12 @@ namespace SyncData
 
     public class RegionDataType : Region
     {
-        public string AnotherName { get; set; }
+        public DateTime Date { get; set; }
     }
 
     public class RegionBusiness : Region, IBusinessModelValidation
     {
+        public string Date { get; set; }
         public string CompanyCode { get; set; }
     }
 
@@ -204,7 +222,7 @@ namespace SyncData
 
             using (var scope = container.BeginLifetimeScope())
             {
-                var json = @"[{ Name: 'Giang' }]";
+                var json = @"[{ Name: 'Giang', Date: '1234' }]";
                 var validation = scope
                     .ResolveNamed<IBaseModelValidation>(
                         nameof(RegionModelValidation), new PositionalParameter(1, json));
